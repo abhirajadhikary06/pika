@@ -61,8 +61,10 @@ def login():
     password = data["password"]
 
     user = User.query.filter_by(email=email).first()
-    if not user or not user.check_password(password):
-        raise AuthenticationError("Invalid email or password.")
+    if not user:
+        raise AuthenticationError("Email address not found.")
+    if not user.check_password(password):
+        raise AuthenticationError("Password is incorrect.")
     if not user.is_active:
         raise AuthenticationError("Account is deactivated.")
 

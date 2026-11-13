@@ -38,6 +38,15 @@ export default function DashboardLayout() {
     },
   });
 
+  const { data: unreadCount = 0 } = useQuery({
+    queryKey: ["notifications", "unread-count"],
+    queryFn: async () => {
+      const { data } = await api.get("/notifications", { params: { per_page: 1 } });
+      return (data.meta?.unread_count ?? 0) as number;
+    },
+    refetchInterval: 30000,
+  });
+
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(
     () => localStorage.getItem("pika_workspace_id") || ""
   );
@@ -118,7 +127,12 @@ export default function DashboardLayout() {
                 )
               }
             >
-              <item.icon className="h-5 w-5 shrink-0" />
+              <span className="relative shrink-0">
+                <item.icon className="h-5 w-5" />
+                {item.to === "/notifications" && unreadCount > 0 && (
+                  <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-red-500" aria-label="Unread notifications" />
+                )}
+              </span>
               {item.label}
             </NavLink>
           ))}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, getErrorMessage } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -8,6 +8,7 @@ export default function AcceptInvitationPage() {
   const { refreshUser, isAuthenticated, isLoading } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState("");
+  const acceptanceStarted = useRef(false);
 
   useEffect(() => {
     if (isLoading || !isAuthenticated) return;
@@ -15,6 +16,8 @@ export default function AcceptInvitationPage() {
       setError("This invitation link is invalid.");
       return;
     }
+    if (acceptanceStarted.current) return;
+    acceptanceStarted.current = true;
     api.post(`/invitations/${token}/accept`)
       .then(async () => {
         await refreshUser();

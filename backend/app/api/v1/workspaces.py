@@ -202,12 +202,13 @@ def create_invitation(workspace_id):
 
     # Check existing membership
     existing_user = User.query.filter_by(email=email).first()
-    if existing_user:
-        existing_mem = Membership.query.filter_by(
-            workspace_id=g.workspace.id, user_id=existing_user.id, is_active=True
-        ).first()
-        if existing_mem:
-            raise ConflictError("User is already a member.")
+    if not existing_user:
+        raise NotFoundError("Email not found.")
+    existing_mem = Membership.query.filter_by(
+        workspace_id=g.workspace.id, user_id=existing_user.id, is_active=True
+    ).first()
+    if existing_mem:
+        raise ConflictError("User is already a member.")
 
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
