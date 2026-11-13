@@ -13,7 +13,12 @@ def _redis_url(value: str | None) -> str | None:
         return value
     parts = urlsplit(value)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query.setdefault("ssl_cert_reqs", "CERT_REQUIRED")
+    cert_reqs = query.get("ssl_cert_reqs", "required").lower()
+    query["ssl_cert_reqs"] = {
+        "cert_required": "required",
+        "cert_optional": "optional",
+        "cert_none": "none",
+    }.get(cert_reqs, cert_reqs)
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
