@@ -6,7 +6,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { api, getErrorMessage } from "@/lib/api";
 import type { Workspace, Membership } from "@/types";
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 
 const createSchema = z.object({
   name: z.string().min(2),
@@ -23,7 +24,10 @@ type InviteForm = z.infer<typeof inviteSchema>;
 
 export default function WorkspaceSettingsPage() {
   const { workspace } = useOutletContext<{ workspace?: Workspace }>();
+  const { user } = useAuth();
   const wsId = workspace?.id;
+  const canInvite = workspace?.role === "owner" || workspace?.role === "admin" || workspace?.owner_id === user?.id;
+  const canManageMembers = workspace?.role === "owner" || workspace?.role === "admin";
   const qc = useQueryClient();
   const [error, setError] = useState("");
   const [showInvite, setShowInvite] = useState(false);
@@ -76,6 +80,16 @@ export default function WorkspaceSettingsPage() {
     onError: (err) => setError(getErrorMessage(err)),
   });
 
+  const removeMember = useMutation({
+    mutationFn: async (member: Membership) => {
+      await api.delete(`/workspaces/${wsId}/members/${member.user_id}`);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["members", wsId] });
+    },
+    onError: (err) => setError(getErrorMessage(err)),
+  });
+
   return (
     <div className="mx-auto max-w-2xl space-y-8">
       <div>
@@ -122,11 +136,14 @@ export default function WorkspaceSettingsPage() {
           <div className="card">
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <h2 className="font-semibold">Members</h2>
-              <button className="btn-secondary text-sm" onClick={() => setShowInvite(true)}>
-                <Plus className="h-4 w-4" />
-                Invite
-              </button>
+              {canInvite && (
+                <button className="btn-secondary text-sm" onClick={() => setShowInvite(true)}>
+                  <Plus className="h-4 w-4" />
+                  Invite
+                </button>
+              )}
             </div>
+            {error && <p className="px-5 pt-3 text-sm text-red-600">{error}</p>}
             <div className="divide-y divide-slate-100">
               {members?.map((m) => (
                 <div key={m.id} className="flex items-center gap-3 px-5 py-3">
@@ -140,6 +157,21 @@ export default function WorkspaceSettingsPage() {
                   <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium capitalize text-slate-600">
                     {m.role}
                   </span>
+                  {canManageMembers && m.role !== "owner" && m.user_id !== user?.id &&
+                    (workspace?.role === "owner" || m.role === "agent" || m.role === "viewer") && (
+                      <button
+                        className="btn-ghost p-2 text-red-600 hover:bg-red-50"
+                        aria-label={`Remove ${m.user?.full_name || "member"}`}
+                        title="Remove member"
+                        disabled={removeMember.isPending}
+                        onClick={() => {
+                          setError("");
+                          removeMember.mutate(m);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
                 </div>
               ))}
             </div>

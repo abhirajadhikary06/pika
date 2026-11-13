@@ -201,7 +201,11 @@ def get_ticket(workspace_id, ticket_id):
     if not ticket:
         raise NotFoundError("Ticket not found.")
 
-    return success_response(ticket.to_dict(include_comments=True, include_activities=True))
+    return success_response(ticket.to_dict(
+        include_comments=True,
+        include_activities=True,
+        include_internal_notes=g.membership.has_permission("agent"),
+    ))
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>/tickets/<ticket_id>", methods=["PATCH"])

@@ -52,7 +52,12 @@ class Ticket(db.Model):
     PRIORITIES = ("low", "medium", "high", "urgent")
     TYPES = ("question", "incident", "problem", "task")
 
-    def to_dict(self, include_comments: bool = False, include_activities: bool = False) -> dict:
+    def to_dict(
+        self,
+        include_comments: bool = False,
+        include_activities: bool = False,
+        include_internal_notes: bool = False,
+    ) -> dict:
         data = {
             "id": str(self.id),
             "workspace_id": str(self.workspace_id),
@@ -78,7 +83,8 @@ class Ticket(db.Model):
         }
         if include_comments:
             data["comments"] = [c.to_dict() for c in self.comments.filter_by(is_internal=False).all()]
-            data["internal_notes"] = [c.to_dict() for c in self.comments.filter_by(is_internal=True).all()]
+            if include_internal_notes:
+                data["internal_notes"] = [c.to_dict() for c in self.comments.filter_by(is_internal=True).all()]
         data["attachments"] = [a.to_dict() for a in self.attachments.all()]
         if include_activities:
             data["activities"] = [a.to_dict() for a in self.activities.limit(50).all()]

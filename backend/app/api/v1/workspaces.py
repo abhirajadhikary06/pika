@@ -169,7 +169,7 @@ def update_member(workspace_id, user_id):
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>/members/<user_id>", methods=["DELETE"])
-@require_workspace_member("admin")
+@require_workspace_member("viewer")
 def remove_member(workspace_id, user_id):
     try:
         uid = uuid.UUID(user_id)
@@ -183,6 +183,10 @@ def remove_member(workspace_id, user_id):
         raise AuthorizationError("Cannot remove the owner.")
     if membership.user_id == g.current_user.id:
         raise AuthorizationError("Use leave endpoint to leave the workspace.")
+    if g.membership.role == "admin" and membership.role not in ("agent", "viewer"):
+        raise AuthorizationError("Admins can only remove agents and viewers.")
+    if g.membership.role != "owner" and g.membership.role != "admin":
+        raise AuthorizationError("Only admins and the owner can remove members.")
 
     membership.is_active = False
     membership.version += 1
@@ -191,8 +195,14 @@ def remove_member(workspace_id, user_id):
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>/invitations", methods=["POST"])
-@require_workspace_member("admin")
+@require_workspace_member("viewer")
 def create_invitation(workspace_id):
+    if (
+        g.membership.role not in ("owner", "admin")
+        and g.workspace.owner_id != g.current_user.id
+    ):
+        raise AuthorizationError("Only admins, the owner, or the workspace creator can invite members.")
+
     data = request.get_json(silent=True) or {}
     require_fields(data, ["email"])
     email = validate_email(data["email"])

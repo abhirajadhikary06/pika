@@ -9,6 +9,7 @@ import { ArrowLeft, Download, Paperclip, Send } from "lucide-react";
 export default function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
   const { workspace } = useOutletContext<{ workspace?: Workspace }>();
+  const canSeeInternalNotes = ["owner", "admin", "agent"].includes(workspace?.role || "");
   const wsId = workspace?.id;
   const qc = useQueryClient();
   const [body, setBody] = useState("");
@@ -100,7 +101,7 @@ export default function TicketDetailPage() {
 
   const comments = [
     ...(ticket.comments || []),
-    ...(ticket.internal_notes || []),
+    ...(canSeeInternalNotes ? ticket.internal_notes || [] : []),
   ].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
   return (
@@ -165,15 +166,17 @@ export default function TicketDetailPage() {
                 onChange={(e) => setBody(e.target.value)}
               />
               <div className="mt-2 flex items-center justify-between">
-                <label className="flex items-center gap-2 text-sm text-slate-600">
-                  <input
-                    type="checkbox"
-                    checked={isInternal}
-                    onChange={(e) => setIsInternal(e.target.checked)}
-                    className="rounded border-slate-300"
-                  />
-                  Internal note
-                </label>
+                {canSeeInternalNotes ? (
+                  <label className="flex items-center gap-2 text-sm text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={isInternal}
+                      onChange={(e) => setIsInternal(e.target.checked)}
+                      className="rounded border-slate-300"
+                    />
+                    Internal note
+                  </label>
+                ) : <span />}
                 <div className="flex items-center gap-2">
                   <label className="btn-secondary cursor-pointer">
                     <Paperclip className="h-4 w-4" />
@@ -266,13 +269,28 @@ export default function TicketDetailPage() {
             <div className="card p-5">
               <h3 className="mb-3 text-sm font-semibold text-slate-900">Activity</h3>
               <ul className="space-y-2">
-                {ticket.activities.slice(0, 10).map((a) => (
+                {ticket.activities.slice(0, 1).map((a) => (
                   <li key={a.id} className="text-xs text-slate-600">
                     <span className="font-medium">{a.actor?.full_name || "System"}</span>{" "}
                     {a.action.replace("_", " ")} · {relativeTime(a.created_at)}
                   </li>
                 ))}
               </ul>
+              {ticket.activities.length > 1 && (
+                <details className="mt-3 border-t border-slate-100 pt-3">
+                  <summary className="cursor-pointer text-xs font-medium text-brand-700 hover:text-brand-800">
+                    Show {ticket.activities.length - 1} more
+                  </summary>
+                  <ul className="mt-3 space-y-2">
+                    {ticket.activities.slice(1).map((a) => (
+                      <li key={a.id} className="text-xs text-slate-600">
+                        <span className="font-medium">{a.actor?.full_name || "System"}</span>{" "}
+                        {a.action.replace("_", " ")} · {relativeTime(a.created_at)}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </div>
           )}
         </div>
