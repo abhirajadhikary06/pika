@@ -17,6 +17,17 @@ def _redis_url(value: str | None) -> str | None:
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
+def _postgresql_url(value: str | None) -> str | None:
+    """Use the installed Psycopg 3 driver for Postgres URLs."""
+    if not value:
+        return value
+    if value.startswith("postgres://"):
+        value = "postgresql://" + value[len("postgres://"):]
+    if value.startswith("postgresql://"):
+        value = "postgresql+psycopg://" + value[len("postgresql://"):]
+    return value
+
+
 class Config:
     """Base configuration."""
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
@@ -45,6 +56,12 @@ class Config:
     # Uploads
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB
     UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/tmp/pika_uploads")
+    AWS_ENDPOINT_URL_S3 = os.getenv("AWS_ENDPOINT_URL_S3")
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+    AWS_REGION = os.getenv("AWS_REGION")
+    AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
+    USE_OBJECT_STORAGE = all((AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_BUCKET_NAME))
     ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "pdf", "txt", "doc", "docx", "csv", "xlsx"}
 
     # Email
@@ -71,10 +88,10 @@ class Config:
 class DevelopmentConfig(Config):
     """Development configuration."""
     DEBUG = True
-    SQLALCHEMY_DATABASE_URI = os.getenv(
+    SQLALCHEMY_DATABASE_URI = _postgresql_url(os.getenv(
         "DATABASE_URL",
         "postgresql://postgres:postgres@localhost:5432/pika_dev"
-    )
+    ))
     CELERY_BROKER_URL = _redis_url(os.getenv("CELERY_BROKER_URL", "memory://"))
     CELERY_RESULT_BACKEND = _redis_url(os.getenv("CELERY_RESULT_BACKEND", "cache+memory://"))
     RATELIMIT_STORAGE_URI = "memory://"
@@ -83,9 +100,7 @@ class DevelopmentConfig(Config):
 class ProductionConfig(Config):
     """Production configuration."""
     DEBUG = False
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
-    if SQLALCHEMY_DATABASE_URI and SQLALCHEMY_DATABASE_URI.startswith("postgres://"):
-        SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.replace("postgres://", "postgresql://", 1)
+    SQLALCHEMY_DATABASE_URI = _postgresql_url(os.getenv("DATABASE_URL"))
 
     CELERY_BROKER_URL = _redis_url(os.getenv("CELERY_BROKER_URL"))  # Upstash Redis
     CELERY_RESULT_BACKEND = _redis_url(os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL))
@@ -100,10 +115,10 @@ class TestingConfig(Config):
     """Testing configuration."""
     TESTING = True
     DEBUG = True
-    SQLALCHEMY_DATABASE_URI = os.getenv(
+    SQLALCHEMY_DATABASE_URI = _postgresql_url(os.getenv(
         "TEST_DATABASE_URL",
         "postgresql://postgres:postgres@localhost:5432/pika_test"
-    )
+    ))
     CELERY_BROKER_URL = "memory://"
     CELERY_RESULT_BACKEND = "cache+memory://"
     RATELIMIT_STORAGE_URI = "memory://"

@@ -40,7 +40,7 @@ jobs:
       - name: Run tests
         env:
           FLASK_ENV: testing
-          TEST_DATABASE_URL: postgresql://pika:pika@localhost:5432/pika_test
+          TEST_DATABASE_URL: postgresql+psycopg://pika:pika@localhost:5432/pika_test
           SECRET_KEY: test-secret
           JWT_SECRET_KEY: test-jwt-secret
         run: pytest -v --tb=short

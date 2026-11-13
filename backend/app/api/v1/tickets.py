@@ -1,8 +1,9 @@
 """Ticket management endpoints."""
 from datetime import datetime, timezone
 import hashlib
+import io
 import os
-from flask import request, g, current_app, send_from_directory
+from flask import request, g, current_app, send_file
 from werkzeug.utils import secure_filename
 from sqlalchemy import or_, func
 from app import db
@@ -16,6 +17,39 @@ import uuid
 import structlog
 
 logger = structlog.get_logger()
+
+
+def _save_attachment(relative_path: str, filename: str, content: bytes, content_type: str) -> None:
+    if current_app.config["USE_OBJECT_STORAGE"]:
+        from app.utils.storage import get_s3_client
+        key = f"{relative_path}/{filename}"
+        get_s3_client().put_object(
+            Bucket=current_app.config["AWS_BUCKET_NAME"],
+            Key=key,
+            Body=content,
+            ContentType=content_type,
+        )
+        return
+
+    folder = os.path.join(current_app.config["UPLOAD_FOLDER"], *relative_path.split("/"))
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, filename), "wb") as stream:
+        stream.write(content)
+
+
+def _read_attachment(relative_path: str, filename: str) -> bytes:
+    if current_app.config["USE_OBJECT_STORAGE"]:
+        from app.utils.storage import get_s3_client
+        key = f"{relative_path}/{filename}"
+        response = get_s3_client().get_object(
+            Bucket=current_app.config["AWS_BUCKET_NAME"],
+            Key=key,
+        )
+        return response["Body"].read()
+
+    path = os.path.join(current_app.config["UPLOAD_FOLDER"], *relative_path.split("/"), filename)
+    with open(path, "rb") as stream:
+        return stream.read()
 
 
 def _next_ticket_number(workspace_id) -> int:
@@ -427,10 +461,8 @@ def upload_attachment(workspace_id, ticket_id):
         raise ValidationError("The uploaded file is empty.")
     file_id = uuid.uuid4()
     stored_name = f"{file_id}.{extension}"
-    folder = os.path.join(current_app.config["UPLOAD_FOLDER"], str(ticket.workspace_id), str(ticket.id))
-    os.makedirs(folder, exist_ok=True)
-    with open(os.path.join(folder, stored_name), "wb") as stream:
-        stream.write(content)
+    relative_path = f"{ticket.workspace_id}/{ticket.id}"
+    _save_attachment(relative_path, stored_name, content, uploaded.content_type or "application/octet-stream")
     attachment = Attachment(
         id=file_id,
         ticket_id=ticket.id,
@@ -439,7 +471,7 @@ def upload_attachment(workspace_id, ticket_id):
         original_filename=original,
         content_type=uploaded.content_type or "application/octet-stream",
         size_bytes=len(content),
-        storage_path=os.path.join(str(ticket.workspace_id), str(ticket.id)),
+        storage_path=relative_path,
         checksum=hashlib.sha256(content).hexdigest(),
         is_processed=True,
     )
@@ -463,11 +495,11 @@ def download_attachment(workspace_id, ticket_id, attachment_id):
     )
     if not attachment:
         raise NotFoundError("Attachment not found.")
-    return send_from_directory(
-        os.path.join(current_app.config["UPLOAD_FOLDER"], attachment.storage_path),
-        attachment.filename,
+    return send_file(
+        io.BytesIO(_read_attachment(attachment.storage_path, attachment.filename)),
         as_attachment=True,
         download_name=attachment.original_filename,
+        mimetype=attachment.content_type,
     )
 
 
