@@ -4,7 +4,8 @@ import { useOutletContext } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { api, getErrorMessage } from "@/lib/api";
+import { api, getErrorMessage, isNetworkUnavailable } from "@/lib/api";
+import { ACCOUNT_SCOPE, getCachedRecords, replaceCachedRecords } from "@/lib/offlineDb";
 import type { Workspace, Membership } from "@/types";
 import { Plus, Trash2 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
@@ -39,11 +40,21 @@ export default function WorkspaceSettingsPage() {
   });
 
   const { data: workspaces } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: ["workspaces", user?.id],
     queryFn: async () => {
-      const { data } = await api.get("/workspaces");
-      return data.data as Workspace[];
+      try {
+        const { data } = await api.get("/workspaces");
+        const availableWorkspaces = data.data as Workspace[];
+        if (user) {
+          await replaceCachedRecords(user.id, ACCOUNT_SCOPE, "workspace", availableWorkspaces).catch(() => undefined);
+        }
+        return availableWorkspaces;
+      } catch (error) {
+        if (!user || !isNetworkUnavailable(error)) throw error;
+        return getCachedRecords<Workspace>(user.id, ACCOUNT_SCOPE, "workspace");
+      }
     },
+    enabled: !!user,
   });
 
   const { data: members } = useQuery({
@@ -61,8 +72,8 @@ export default function WorkspaceSettingsPage() {
       return data.data as Workspace;
     },
     onSuccess: (ws) => {
-      localStorage.setItem("pika_workspace_id", ws.id);
-      qc.invalidateQueries({ queryKey: ["workspaces"] });
+      if (user) localStorage.setItem("pika_workspace_id:" + user.id, ws.id);
+      qc.invalidateQueries({ queryKey: ["workspaces", user?.id] });
       createForm.reset();
     },
     onError: (err) => setError(getErrorMessage(err)),

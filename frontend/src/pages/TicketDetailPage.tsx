@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useParams, useOutletContext, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, getErrorMessage } from "@/lib/api";
+import { api, getErrorMessage, isNetworkUnavailable } from "@/lib/api";
+import { cacheRecords, getCachedRecord } from "@/lib/offlineDb";
+import { useAuth } from "@/lib/auth";
 import type { Workspace, Ticket, Comment } from "@/types";
 import { STATUS_COLORS, PRIORITY_COLORS, relativeTime, formatDate, statusLabel, cn } from "@/lib/utils";
 import { ArrowLeft, Download, Paperclip, Send } from "lucide-react";
@@ -9,6 +11,7 @@ import { ArrowLeft, Download, Paperclip, Send } from "lucide-react";
 export default function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
   const { workspace } = useOutletContext<{ workspace?: Workspace }>();
+  const { user, isOffline } = useAuth();
   const canSeeInternalNotes = ["owner", "admin", "agent"].includes(workspace?.role || "");
   const wsId = workspace?.id;
   const qc = useQueryClient();
@@ -20,10 +23,20 @@ export default function TicketDetailPage() {
   const { data: ticket, isLoading } = useQuery({
     queryKey: ["ticket", wsId, ticketId],
     queryFn: async () => {
-      const { data } = await api.get(`/workspaces/${wsId}/tickets/${ticketId}`);
-      return data.data as Ticket;
+      try {
+        const response = await api.get("/workspaces/" + wsId + "/tickets/" + ticketId);
+        const ticket = response.data.data as Ticket;
+        if (user) {
+          await cacheRecords(user.id, wsId!, "ticket-detail", [ticket]).catch(() => undefined);
+        }
+        return ticket;
+      } catch (error) {
+        if (!user || !isNetworkUnavailable(error)) throw error;
+        const detailedTicket = await getCachedRecord<Ticket>(user.id, wsId!, "ticket-detail", ticketId!);
+        return detailedTicket || getCachedRecord<Ticket>(user.id, wsId!, "ticket", ticketId!);
+      }
     },
-    enabled: !!wsId && !!ticketId,
+    enabled: !!wsId && !!ticketId && !!user,
   });
 
   const updateMutation = useMutation({
@@ -91,12 +104,15 @@ export default function TicketDetailPage() {
     onError: (err) => setError(getErrorMessage(err)),
   });
 
-  if (isLoading || !ticket) {
+  if (isLoading) {
     return (
       <div className="flex justify-center py-20">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-brand-600 border-t-transparent" />
       </div>
     );
+  }
+  if (!ticket) {
+    return <p className="py-12 text-center text-sm text-slate-500">This ticket has not been saved on this device. Connect to the internet to load it.</p>;
   }
 
   const comments = [
@@ -164,6 +180,7 @@ export default function TicketDetailPage() {
                 placeholder="Write a reply…"
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
+                disabled={isOffline}
               />
               <div className="mt-2 flex items-center justify-between">
                 {canSeeInternalNotes ? (
@@ -171,6 +188,7 @@ export default function TicketDetailPage() {
                     <input
                       type="checkbox"
                       checked={isInternal}
+                      disabled={isOffline}
                       onChange={(e) => setIsInternal(e.target.checked)}
                       className="rounded border-slate-300"
                     />
@@ -184,7 +202,7 @@ export default function TicketDetailPage() {
                     <input
                       type="file"
                       className="hidden"
-                      disabled={uploading}
+                      disabled={uploading || isOffline}
                       onChange={(event) => {
                         const file = event.target.files?.[0];
                         if (file) void uploadAttachment(file);
@@ -194,7 +212,7 @@ export default function TicketDetailPage() {
                   </label>
                   <button
                   className="btn-primary"
-                  disabled={!body.trim() || commentMutation.isPending}
+                  disabled={!body.trim() || commentMutation.isPending || isOffline}
                   onClick={() => {
                     setError("");
                     commentMutation.mutate();
@@ -218,7 +236,8 @@ export default function TicketDetailPage() {
                   <li key={attachment.id} className="flex items-center gap-2 text-sm">
                     <Paperclip className="h-4 w-4 text-slate-400" />
                     <button
-                      className="min-w-0 flex-1 truncate text-left text-brand-700 hover:underline"
+                      className="min-w-0 flex-1 truncate text-left text-brand-700 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={isOffline}
                       onClick={() => void downloadAttachment(attachment.id, attachment.original_filename)}
                     >
                       {attachment.original_filename}
@@ -235,6 +254,7 @@ export default function TicketDetailPage() {
               <select
                 className="input"
                 value={ticket.status}
+                disabled={isOffline}
                 onChange={(e) => updateMutation.mutate({ status: e.target.value as Ticket["status"] })}
               >
                 <option value="open">Open</option>
@@ -249,6 +269,7 @@ export default function TicketDetailPage() {
               <select
                 className="input"
                 value={ticket.priority}
+                disabled={isOffline}
                 onChange={(e) => updateMutation.mutate({ priority: e.target.value as Ticket["priority"] })}
               >
                 <option value="low">Low</option>

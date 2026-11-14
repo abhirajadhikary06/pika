@@ -11,6 +11,7 @@ import SettingsPage from "./pages/SettingsPage";
 import NotificationsPage from "./pages/NotificationsPage";
 import AcceptInvitationPage from "./pages/AcceptInvitationPage";
 import ServiceWorkerUpdatePrompt from "./components/ServiceWorkerUpdatePrompt";
+import PwaStatusNotices from "./components/PwaStatusNotices";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -70,6 +71,7 @@ export default function App() {
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <PwaStatusNotices />
       <ServiceWorkerUpdatePrompt />
     </>
   );

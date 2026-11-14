@@ -4,7 +4,9 @@ import { Link, useOutletContext } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { api, getErrorMessage } from "@/lib/api";
+import { api, getErrorMessage, isNetworkUnavailable } from "@/lib/api";
+import { cacheRecords, getCachedRecords } from "@/lib/offlineDb";
+import { useAuth } from "@/lib/auth";
 import type { Workspace, Ticket } from "@/types";
 import { STATUS_COLORS, PRIORITY_COLORS, relativeTime, statusLabel, cn } from "@/lib/utils";
 import { Plus, Search, X } from "lucide-react";
@@ -20,6 +22,7 @@ type CreateForm = z.infer<typeof createSchema>;
 
 export default function TicketsPage() {
   const { workspace } = useOutletContext<{ workspace?: Workspace }>();
+  const { user, isOffline } = useAuth();
   const wsId = workspace?.id;
   const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState("");
@@ -30,16 +33,32 @@ export default function TicketsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["tickets", wsId, statusFilter, search],
     queryFn: async () => {
-      const { data } = await api.get(`/workspaces/${wsId}/tickets`, {
-        params: {
-          status: statusFilter || undefined,
-          q: search || undefined,
-          per_page: 50,
-        },
-      });
-      return data as { data: Ticket[]; meta: { total: number } };
+      try {
+        const response = await api.get("/workspaces/" + wsId + "/tickets", {
+          params: {
+            status: statusFilter || undefined,
+            q: search || undefined,
+            per_page: 50,
+          },
+        });
+        const result = response.data as { data: Ticket[]; meta: { total: number } };
+        if (user) {
+          await cacheRecords(user.id, wsId!, "ticket", result.data).catch(() => undefined);
+        }
+        return result;
+      } catch (error) {
+        if (!user || !isNetworkUnavailable(error)) throw error;
+        const saved = await getCachedRecords<Ticket>(user.id, wsId!, "ticket");
+        const filtered = saved.filter((ticket) => {
+          const matchesStatus = !statusFilter || ticket.status === statusFilter;
+          const searchText = (ticket.title + " " + (ticket.description || "")).toLowerCase();
+          const matchesSearch = !search || searchText.includes(search.toLowerCase());
+          return matchesStatus && matchesSearch;
+        });
+        return { data: filtered.slice(0, 50), meta: { total: filtered.length } };
+      }
     },
-    enabled: !!wsId,
+    enabled: !!wsId && !!user,
   });
 
   const {
@@ -77,7 +96,7 @@ export default function TicketsPage() {
           <h1 className="text-2xl font-semibold text-slate-900">Tickets</h1>
           <p className="text-sm text-slate-500">{data?.meta?.total ?? 0} total</p>
         </div>
-        <button className="btn-primary" onClick={() => setShowCreate(true)}>
+        <button className="btn-primary" disabled={isOffline} onClick={() => setShowCreate(true)}>
           <Plus className="h-4 w-4" />
           New ticket
         </button>
@@ -193,7 +212,7 @@ export default function TicketsPage() {
                 <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>
                   Cancel
                 </button>
-                <button type="submit" className="btn-primary" disabled={isSubmitting}>
+                <button type="submit" className="btn-primary" disabled={isSubmitting || isOffline}>
                   {isSubmitting ? "Creating…" : "Create ticket"}
                 </button>
               </div>

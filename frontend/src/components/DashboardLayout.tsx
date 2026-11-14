@@ -12,7 +12,8 @@ import {
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, isNetworkUnavailable } from "@/lib/api";
+import { ACCOUNT_SCOPE, getCachedRecords, replaceCachedRecords } from "@/lib/offlineDb";
 import type { Workspace } from "@/types";
 import { cn } from "@/lib/utils";
 import logo from "@/assets/logo-128.png";
@@ -26,20 +27,30 @@ const nav = [
 ];
 
 export default function DashboardLayout() {
-  const { user, logout } = useAuth();
+  const { user, logout, isOffline } = useAuth();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const { data: workspaces } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: ["workspaces", user?.id],
     queryFn: async () => {
-      const { data } = await api.get("/workspaces");
-      return data.data as Workspace[];
+      try {
+        const { data } = await api.get("/workspaces");
+        const workspaces = data.data as Workspace[];
+        if (user) {
+          await replaceCachedRecords(user.id, ACCOUNT_SCOPE, "workspace", workspaces).catch(() => undefined);
+        }
+        return workspaces;
+      } catch (error) {
+        if (!user || !isNetworkUnavailable(error)) throw error;
+        return getCachedRecords<Workspace>(user.id, ACCOUNT_SCOPE, "workspace");
+      }
     },
+    enabled: !!user,
   });
 
   const { data: unreadCount = 0 } = useQuery({
-    queryKey: ["notifications", "unread-count"],
+    queryKey: ["notifications", user?.id, "unread-count"],
     queryFn: async () => {
       const { data } = await api.get("/notifications", { params: { per_page: 1 } });
       return (data.meta?.unread_count ?? 0) as number;
@@ -47,21 +58,22 @@ export default function DashboardLayout() {
     refetchInterval: 30000,
   });
 
+  const workspaceSelectionKey = user ? "pika_workspace_id:" + user.id : "pika_workspace_id";
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(
-    () => localStorage.getItem("pika_workspace_id") || ""
+    () => localStorage.getItem(workspaceSelectionKey) || ""
   );
   const currentWs = workspaces?.find((ws) => ws.id === selectedWorkspaceId) || workspaces?.[0];
 
   useEffect(() => {
     if (currentWs && currentWs.id !== selectedWorkspaceId) {
       setSelectedWorkspaceId(currentWs.id);
-      localStorage.setItem("pika_workspace_id", currentWs.id);
+      localStorage.setItem(workspaceSelectionKey, currentWs.id);
     }
-  }, [currentWs, selectedWorkspaceId]);
+  }, [currentWs, selectedWorkspaceId, workspaceSelectionKey]);
 
   const handleLogout = async () => {
-    await logout();
-    navigate("/login");
+    const didLogout = await logout();
+    if (didLogout) navigate("/login");
   };
 
   return (
@@ -102,7 +114,7 @@ export default function DashboardLayout() {
               value={currentWs.id}
               onChange={(event) => {
                 setSelectedWorkspaceId(event.target.value);
-                localStorage.setItem("pika_workspace_id", event.target.value);
+                localStorage.setItem(workspaceSelectionKey, event.target.value);
               }}
               aria-label="Select workspace"
             >

@@ -1,12 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { useOutletContext, Link } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, isNetworkUnavailable } from "@/lib/api";
+import { cacheRecords, getCachedRecords } from "@/lib/offlineDb";
+import { useAuth } from "@/lib/auth";
 import type { Workspace, WorkspaceStats, Ticket } from "@/types";
 import { STATUS_COLORS, PRIORITY_COLORS, relativeTime, statusLabel, cn } from "@/lib/utils";
 import { Ticket as TicketIcon, Clock, UserX, AlertCircle } from "lucide-react";
 
 export default function DashboardPage() {
   const { workspace } = useOutletContext<{ workspace?: Workspace }>();
+  const { user } = useAuth();
   const wsId = workspace?.id;
 
   const { data: stats, isLoading: statsLoading } = useQuery({
@@ -21,12 +24,24 @@ export default function DashboardPage() {
   const { data: recent } = useQuery({
     queryKey: ["tickets", wsId, "recent"],
     queryFn: async () => {
-      const { data } = await api.get(`/workspaces/${wsId}/tickets`, {
-        params: { per_page: 5, sort: "-updated_at" },
-      });
-      return data.data as Ticket[];
+      try {
+        const response = await api.get("/workspaces/" + wsId + "/tickets", {
+          params: { per_page: 5, sort: "-updated_at" },
+        });
+        const tickets = response.data.data as Ticket[];
+        if (user) {
+          await cacheRecords(user.id, wsId!, "ticket", tickets).catch(() => undefined);
+        }
+        return tickets;
+      } catch (error) {
+        if (!user || !isNetworkUnavailable(error)) throw error;
+        const cachedTickets = await getCachedRecords<Ticket>(user.id, wsId!, "ticket");
+        return cachedTickets
+          .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+          .slice(0, 5);
+      }
     },
-    enabled: !!wsId,
+    enabled: !!wsId && !!user,
   });
 
   if (!wsId) {
