@@ -24,8 +24,14 @@ export interface OutboxOperation {
   recordType: "ticket" | "comment";
   operation: "create" | "update" | "delete";
   payload: unknown;
+  baseVersion?: number;
+  baseSnapshot?: Record<string, unknown>;
   createdAt: string;
-  status: "pending" | "inflight" | "conflict";
+  status: "pending" | "inflight" | "synced" | "failed" | "conflict";
+  attempts?: number;
+  nextAttemptAt?: string;
+  error?: string;
+  conflictServer?: unknown;
 }
 
 export interface SyncMetadata {
@@ -44,6 +50,11 @@ class PikaOfflineDatabase extends Dexie {
   constructor() {
     super("pika-offline");
     this.version(1).stores({
+      records: "&[userId+workspaceId+kind+recordId],[userId+workspaceId+kind],[userId+workspaceId],userId",
+      outbox: "&opId,[userId+workspaceId],[userId+status],userId,createdAt",
+      meta: "&[userId+workspaceId+key],[userId+workspaceId],userId",
+    });
+    this.version(2).stores({
       records: "&[userId+workspaceId+kind+recordId],[userId+workspaceId+kind],[userId+workspaceId],userId",
       outbox: "&opId,[userId+workspaceId],[userId+status],userId,createdAt",
       meta: "&[userId+workspaceId+key],[userId+workspaceId],userId",
@@ -93,9 +104,12 @@ export async function cacheRecords<T extends { id: string; version?: number }>(
 ): Promise<void> {
   if (!isOfflineStorageAvailable()) return;
   const updatedAt = new Date().toISOString();
-  await withQuotaHandling(() =>
-    offlineDb.records.bulkPut(
-      records.map((payload) => ({
+  await withQuotaHandling(() => offlineDb.transaction("rw", offlineDb.records, offlineDb.outbox, async () => {
+    const writes = [];
+    for (const payload of records) {
+      const pending = await hasPendingWrite(userId, workspaceId, payload.id);
+      if (pending) continue;
+      writes.push({
         userId,
         workspaceId,
         kind,
@@ -104,9 +118,10 @@ export async function cacheRecords<T extends { id: string; version?: number }>(
         deleted: false,
         updatedAt,
         payload,
-      })),
-    ),
-  );
+      });
+    }
+    if (writes.length) await offlineDb.records.bulkPut(writes);
+  }));
 }
 
 export async function replaceCachedRecords<T extends { id: string; version?: number }>(
@@ -163,6 +178,31 @@ export async function getCachedRecord<T>(
   return record && !record.deleted ? (record.payload as T) : undefined;
 }
 
+export async function hasPendingWrite(userId: string, workspaceId: string, recordId: string): Promise<boolean> {
+  if (!isOfflineStorageAvailable()) return false;
+  return offlineDb.outbox.where("[userId+workspaceId]").equals([userId, workspaceId])
+    .filter((operation) => {
+      if (["synced"].includes(operation.status)) return false;
+      if (operation.recordId === recordId) return true;
+      const payload = operation.payload as { ticket_id?: string };
+      return operation.recordType === "comment" && payload.ticket_id === recordId;
+    }).count().then((count) => count > 0);
+}
+
+export async function getPendingRecordIds(userId: string, workspaceId: string): Promise<Set<string>> {
+  if (!isOfflineStorageAvailable()) return new Set();
+  const operations = await offlineDb.outbox.where("[userId+workspaceId]").equals([userId, workspaceId])
+    .filter((operation) => operation.status !== "synced").toArray();
+  const ids = new Set(operations.map((operation) => operation.recordId));
+  for (const operation of operations) {
+    if (operation.recordType === "comment") {
+      const payload = operation.payload as { ticket_id?: string };
+      if (payload.ticket_id) ids.add(payload.ticket_id);
+    }
+  }
+  return ids;
+}
+
 export async function cacheOfflineSession(user: User): Promise<void> {
   if (!isOfflineStorageAvailable()) return;
   await withQuotaHandling(() =>
@@ -184,7 +224,11 @@ export async function getOfflineSession(userId: string): Promise<User | undefine
 
 export async function countPendingOperations(userId: string): Promise<number> {
   if (!isOfflineStorageAvailable()) return 0;
-  return offlineDb.outbox.where("userId").equals(userId).count();
+  const statuses: OutboxOperation["status"][] = ["pending", "inflight", "failed", "conflict"];
+  const counts = await Promise.all(statuses.map((status) =>
+    offlineDb.outbox.where("[userId+status]").equals([userId, status]).count(),
+  ));
+  return counts.reduce((sum, count) => sum + count, 0);
 }
 
 export async function clearAccountData(userId: string): Promise<void> {
@@ -205,4 +249,24 @@ export async function requestPersistentStorage(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function enqueueOfflineWrite(
+  operation: Omit<OutboxOperation, "status" | "createdAt" | "attempts">,
+  record: CachedRecord,
+): Promise<void> {
+  await withQuotaHandling(() => offlineDb.transaction("rw", offlineDb.records, offlineDb.outbox, async () => {
+    await offlineDb.records.put(record);
+    await offlineDb.outbox.put({ ...operation, status: "pending", attempts: 0, createdAt: new Date().toISOString() });
+  }));
+}
+
+export async function enqueueOfflineWrites(
+  operation: Omit<OutboxOperation, "status" | "createdAt" | "attempts">,
+  records: CachedRecord[],
+): Promise<void> {
+  await withQuotaHandling(() => offlineDb.transaction("rw", offlineDb.records, offlineDb.outbox, async () => {
+    await offlineDb.records.bulkPut(records);
+    await offlineDb.outbox.put({ ...operation, status: "pending", attempts: 0, createdAt: new Date().toISOString() });
+  }));
 }

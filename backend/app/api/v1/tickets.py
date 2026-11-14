@@ -8,8 +8,9 @@ from werkzeug.utils import secure_filename
 from sqlalchemy import or_, func
 from app import db
 from app.api.v1 import api_v1_bp
-from app.models.ticket import Ticket, Comment, Activity, Attachment
+from app.models.ticket import Ticket, Comment, Activity, Attachment, SyncChange
 from app.models.notification import Notification
+from app.models.workspace import Workspace
 from app.utils.auth import require_auth, require_workspace_member
 from app.utils.errors import ValidationError, NotFoundError, AuthorizationError
 from app.utils.validators import require_fields, paginate_params, success_response
@@ -70,6 +71,19 @@ def _log_activity(ticket, action: str, details: dict = None, actor_id=None):
         details=details or {},
     )
     db.session.add(act)
+
+
+def _log_sync_change(ticket, entity_type="ticket", entity_id=None, version=None, payload=None):
+    # Serialize writes per workspace so allocated cursors follow commit order.
+    Workspace.query.filter_by(id=ticket.workspace_id).with_for_update().first()
+    db.session.add(SyncChange(
+        workspace_id=ticket.workspace_id,
+        entity_type=entity_type,
+        entity_id=entity_id or ticket.id,
+        operation="upsert",
+        version=version if version is not None else ticket.version,
+        payload=payload if payload is not None else ticket.to_dict(),
+    ))
 
 
 def _notify(user_id, workspace_id, ticket_id, ntype: str, title: str, body: str = None, data: dict = None):
@@ -189,6 +203,7 @@ def create_ticket(workspace_id):
         if existing:
             return success_response(existing.to_dict(), message="Ticket already exists (idempotent).")
 
+    Workspace.query.filter_by(id=g.workspace.id).with_for_update().first()
     number = _next_ticket_number(g.workspace.id)
     ticket = Ticket(
         workspace_id=g.workspace.id,
@@ -207,6 +222,7 @@ def create_ticket(workspace_id):
     db.session.flush()
 
     _log_activity(ticket, "created", {"title": title})
+    _log_sync_change(ticket)
     if assignee_id:
         _log_activity(ticket, "assigned", {"assignee_id": str(assignee_id)})
         _notify(
@@ -343,6 +359,7 @@ def update_ticket(workspace_id, ticket_id):
         return success_response(ticket.to_dict(), message="No changes.")
 
     ticket.version += 1
+    _log_sync_change(ticket)
     db.session.commit()
     return success_response(ticket.to_dict(), message="Ticket updated.")
 
@@ -408,6 +425,8 @@ def add_comment(workspace_id, ticket_id):
 
     ticket.version += 1
     ticket.updated_at = datetime.now(timezone.utc)
+    _log_sync_change(ticket, "comment", comment.id, comment.version, {**comment.to_dict(), "is_internal": is_internal})
+    _log_sync_change(ticket)
     db.session.commit()
 
     from app.tasks.notifications import send_ticket_reply_notification

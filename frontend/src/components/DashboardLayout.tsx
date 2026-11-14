@@ -14,6 +14,7 @@ import { useAuth } from "@/lib/auth";
 import { useQuery } from "@tanstack/react-query";
 import { api, isNetworkUnavailable } from "@/lib/api";
 import { ACCOUNT_SCOPE, getCachedRecords, replaceCachedRecords } from "@/lib/offlineDb";
+import { syncWorkspace } from "@/lib/sync";
 import type { Workspace } from "@/types";
 import { cn } from "@/lib/utils";
 import logo from "@/assets/logo-128.png";
@@ -63,6 +64,21 @@ export default function DashboardLayout() {
     () => localStorage.getItem(workspaceSelectionKey) || ""
   );
   const currentWs = workspaces?.find((ws) => ws.id === selectedWorkspaceId) || workspaces?.[0];
+
+  useEffect(() => {
+    if (!user || !currentWs) return;
+    const sync = () => { void syncWorkspace(user.id, currentWs.id).catch(() => undefined); };
+    const onVisible = () => { if (document.visibilityState === "visible") sync(); };
+    sync();
+    window.addEventListener("online", sync);
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = window.setInterval(sync, 30000);
+    return () => {
+      window.removeEventListener("online", sync);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.clearInterval(timer);
+    };
+  }, [user, currentWs?.id]);
 
   useEffect(() => {
     if (currentWs && currentWs.id !== selectedWorkspaceId) {

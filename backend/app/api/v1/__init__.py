@@ -3,4 +3,4 @@ from flask import Blueprint
 
 api_v1_bp = Blueprint("api_v1", __name__)
 
-from app.api.v1 import auth, workspaces, tickets, users, notifications  # noqa: E402, F401
+from app.api.v1 import auth, workspaces, tickets, users, notifications, sync  # noqa: E402, F401

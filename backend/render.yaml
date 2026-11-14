@@ -6,6 +6,7 @@ services:
     plan: starter
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
+    preDeployCommand: flask --app run.py db upgrade
     healthCheckPath: /health
     envVars:
       - key: FLASK_ENV

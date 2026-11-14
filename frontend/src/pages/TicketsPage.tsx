@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useOutletContext } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { api, getErrorMessage, isNetworkUnavailable } from "@/lib/api";
-import { cacheRecords, getCachedRecords } from "@/lib/offlineDb";
+import { cacheRecords, getCachedRecords, getPendingRecordIds } from "@/lib/offlineDb";
+import { queueTicketCreate } from "@/lib/sync";
 import { useAuth } from "@/lib/auth";
 import type { Workspace, Ticket } from "@/types";
 import { STATUS_COLORS, PRIORITY_COLORS, relativeTime, statusLabel, cn } from "@/lib/utils";
@@ -22,13 +23,19 @@ type CreateForm = z.infer<typeof createSchema>;
 
 export default function TicketsPage() {
   const { workspace } = useOutletContext<{ workspace?: Workspace }>();
-  const { user, isOffline } = useAuth();
+  const { user } = useAuth();
   const wsId = workspace?.id;
   const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState("");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const refreshAfterSync = () => { void qc.invalidateQueries({ queryKey: ["tickets", wsId] }); };
+    window.addEventListener("pika:sync-updated", refreshAfterSync);
+    return () => window.removeEventListener("pika:sync-updated", refreshAfterSync);
+  }, [qc, wsId]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["tickets", wsId, statusFilter, search],
@@ -44,6 +51,14 @@ export default function TicketsPage() {
         const result = response.data as { data: Ticket[]; meta: { total: number } };
         if (user) {
           await cacheRecords(user.id, wsId!, "ticket", result.data).catch(() => undefined);
+          const pendingIds = await getPendingRecordIds(user.id, wsId!);
+          const cached = await getCachedRecords<Ticket>(user.id, wsId!, "ticket");
+          const localById = new Map(cached.filter((ticket) => pendingIds.has(ticket.id)).map((ticket) => [ticket.id, ticket]));
+          const merged = result.data.map((ticket) => localById.get(ticket.id) || ticket);
+          const known = new Set(merged.map((ticket) => ticket.id));
+          for (const local of localById.values()) if (!known.has(local.id)) merged.unshift(local);
+          result.data = merged;
+          result.meta.total += [...localById.keys()].filter((id) => !known.has(id)).length;
         }
         return result;
       } catch (error) {
@@ -73,8 +88,8 @@ export default function TicketsPage() {
 
   const createMutation = useMutation({
     mutationFn: async (form: CreateForm) => {
-      const { data } = await api.post(`/workspaces/${wsId}/tickets`, form);
-      return data.data as Ticket;
+      if (!user || !wsId) throw new Error("Sign in and select a workspace first.");
+      return queueTicketCreate(user.id, wsId, form);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tickets", wsId] });
@@ -96,7 +111,7 @@ export default function TicketsPage() {
           <h1 className="text-2xl font-semibold text-slate-900">Tickets</h1>
           <p className="text-sm text-slate-500">{data?.meta?.total ?? 0} total</p>
         </div>
-        <button className="btn-primary" disabled={isOffline} onClick={() => setShowCreate(true)}>
+        <button className="btn-primary" onClick={() => setShowCreate(true)}>
           <Plus className="h-4 w-4" />
           New ticket
         </button>
@@ -141,7 +156,7 @@ export default function TicketsPage() {
                 to={`/tickets/${t.id}`}
                 className="flex items-center gap-4 px-5 py-3.5 hover:bg-slate-50 transition-colors"
               >
-                <span className="w-12 shrink-0 text-sm font-medium text-slate-400">#{t.number}</span>
+                <span className="w-12 shrink-0 text-sm font-medium text-slate-400">{t.number ? `#${t.number}` : "Pending"}</span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-slate-900">{t.title}</p>
                   <p className="text-xs text-slate-500">
@@ -212,7 +227,7 @@ export default function TicketsPage() {
                 <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>
                   Cancel
                 </button>
-                <button type="submit" className="btn-primary" disabled={isSubmitting || isOffline}>
+                <button type="submit" className="btn-primary" disabled={isSubmitting}>
                   {isSubmitting ? "Creating…" : "Create ticket"}
                 </button>
               </div>

@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useOutletContext, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, getErrorMessage, isNetworkUnavailable } from "@/lib/api";
-import { cacheRecords, getCachedRecord } from "@/lib/offlineDb";
+import { cacheRecords, getCachedRecord, hasPendingWrite, offlineDb, type OutboxOperation } from "@/lib/offlineDb";
+import { queueTicketComment, queueTicketUpdate, resolveSyncConflict } from "@/lib/sync";
 import { useAuth } from "@/lib/auth";
-import type { Workspace, Ticket, Comment } from "@/types";
+import type { Workspace, Ticket } from "@/types";
 import { STATUS_COLORS, PRIORITY_COLORS, relativeTime, formatDate, statusLabel, cn } from "@/lib/utils";
 import { ArrowLeft, Download, Paperclip, Send } from "lucide-react";
 
@@ -19,6 +20,22 @@ export default function TicketDetailPage() {
   const [isInternal, setIsInternal] = useState(false);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [ticketOperations, setTicketOperations] = useState<OutboxOperation[]>([]);
+
+  useEffect(() => {
+    if (!user || !wsId || !ticketId) return;
+    let live = true;
+    const refresh = async () => {
+      const operations = await offlineDb.outbox.where("[userId+workspaceId]").equals([user.id, wsId]).toArray();
+      if (live) setTicketOperations(operations.filter((operation) =>
+        operation.recordId === ticketId || (operation.payload as { ticket_id?: string })?.ticket_id === ticketId,
+      ));
+      void qc.invalidateQueries({ queryKey: ["ticket", wsId, ticketId] });
+    };
+    void refresh();
+    window.addEventListener("pika:sync-updated", refresh);
+    return () => { live = false; window.removeEventListener("pika:sync-updated", refresh); };
+  }, [user, wsId, ticketId]);
 
   const { data: ticket, isLoading } = useQuery({
     queryKey: ["ticket", wsId, ticketId],
@@ -27,6 +44,10 @@ export default function TicketDetailPage() {
         const response = await api.get("/workspaces/" + wsId + "/tickets/" + ticketId);
         const ticket = response.data.data as Ticket;
         if (user) {
+          if (await hasPendingWrite(user.id, wsId!, ticket.id)) {
+            const local = await getCachedRecord<Ticket>(user.id, wsId!, "ticket-detail", ticket.id);
+            if (local) return local;
+          }
           await cacheRecords(user.id, wsId!, "ticket-detail", [ticket]).catch(() => undefined);
         }
         return ticket;
@@ -41,11 +62,11 @@ export default function TicketDetailPage() {
 
   const updateMutation = useMutation({
     mutationFn: async (payload: Partial<Ticket>) => {
-      const { data } = await api.patch(`/workspaces/${wsId}/tickets/${ticketId}`, payload);
-      return data.data as Ticket;
+      if (!user || !wsId || !ticket) throw new Error("Ticket is not available.");
+      return queueTicketUpdate(user.id, wsId, ticket, payload);
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["ticket", wsId, ticketId] });
+    onSuccess: (updated) => {
+      qc.setQueryData(["ticket", wsId, ticketId], updated);
       qc.invalidateQueries({ queryKey: ["tickets", wsId] });
       qc.invalidateQueries({ queryKey: ["stats", wsId] });
     },
@@ -89,17 +110,17 @@ export default function TicketDetailPage() {
 
   const commentMutation = useMutation({
     mutationFn: async () => {
-      const { data } = await api.post(`/workspaces/${wsId}/tickets/${ticketId}/comments`, {
-        body,
-        is_internal: isInternal,
-      });
-
-      return data.data as Comment;
+      if (!user || !wsId || !ticket) throw new Error("Ticket is not available.");
+      return queueTicketComment(user.id, wsId, ticket, body, isInternal);
     },
-    onSuccess: () => {
+    onSuccess: (comment) => {
+      qc.setQueryData<Ticket>(["ticket", wsId, ticketId], (current) => current ? {
+        ...current,
+        comments: comment.is_internal ? current.comments : [...(current.comments || []), comment],
+        internal_notes: comment.is_internal ? [...(current.internal_notes || []), comment] : current.internal_notes,
+      } : current);
       setBody("");
       setIsInternal(false);
-      qc.invalidateQueries({ queryKey: ["ticket", wsId, ticketId] });
     },
     onError: (err) => setError(getErrorMessage(err)),
   });
@@ -119,6 +140,11 @@ export default function TicketDetailPage() {
     ...(ticket.comments || []),
     ...(canSeeInternalNotes ? ticket.internal_notes || [] : []),
   ].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const pendingCount = ticketOperations.filter((operation) => ["pending", "inflight"].includes(operation.status)).length;
+  const syncingCount = ticketOperations.filter((operation) => operation.status === "inflight").length;
+  const failedOperations = ticketOperations.filter((operation) => operation.status === "failed");
+  const syncedCount = ticketOperations.filter((operation) => operation.status === "synced").length;
+  const conflictedOperations = ticketOperations.filter((operation) => operation.status === "conflict");
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -128,7 +154,7 @@ export default function TicketDetailPage() {
         </Link>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium text-slate-400">#{ticket.number}</span>
+            <span className="text-sm font-medium text-slate-400">{ticket.number ? `#${ticket.number}` : "Pending"}</span>
             <span className={cn("rounded-full px-2.5 py-0.5 text-xs font-medium capitalize", STATUS_COLORS[ticket.status])}>
               {statusLabel(ticket.status)}
             </span>
@@ -139,6 +165,25 @@ export default function TicketDetailPage() {
           <h1 className="mt-1 text-xl font-semibold text-slate-900">{ticket.title}</h1>
         </div>
       </div>
+
+      {(ticketOperations.length > 0) && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          {pendingCount > 0 && <p>{syncingCount > 0 ? `${syncingCount} change${syncingCount === 1 ? "" : "s"} syncing; ` : ""}{pendingCount - syncingCount} change{pendingCount - syncingCount === 1 ? "" : "s"} pending.</p>}
+          {syncedCount > 0 && <p>{syncedCount} change{syncedCount === 1 ? "" : "s"} synced.</p>}
+          {failedOperations.map((operation) => <p key={operation.opId} className="text-red-700">Sync will retry: {operation.error || "Temporary connection problem."}</p>)}
+          {conflictedOperations.map((operation) => (
+            <div key={operation.opId} className="mt-2 flex flex-wrap items-center gap-2">
+              <span>This change overlaps with an update made elsewhere. Choose which version to keep.</span>
+              <button className="btn-secondary" onClick={() => {
+                void resolveSyncConflict(operation.opId, "server", user!.id).then(() => qc.invalidateQueries({ queryKey: ["ticket", wsId, ticketId] }));
+              }}>Keep server version</button>
+              <button className="btn-primary" onClick={() => {
+                void resolveSyncConflict(operation.opId, "local", user!.id);
+              }}>Keep my change</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
@@ -180,7 +225,7 @@ export default function TicketDetailPage() {
                 placeholder="Write a reply…"
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
-                disabled={isOffline}
+                  disabled={false}
               />
               <div className="mt-2 flex items-center justify-between">
                 {canSeeInternalNotes ? (
@@ -212,7 +257,7 @@ export default function TicketDetailPage() {
                   </label>
                   <button
                   className="btn-primary"
-                  disabled={!body.trim() || commentMutation.isPending || isOffline}
+                  disabled={!body.trim() || commentMutation.isPending}
                   onClick={() => {
                     setError("");
                     commentMutation.mutate();
@@ -254,7 +299,7 @@ export default function TicketDetailPage() {
               <select
                 className="input"
                 value={ticket.status}
-                disabled={isOffline}
+                disabled={false}
                 onChange={(e) => updateMutation.mutate({ status: e.target.value as Ticket["status"] })}
               >
                 <option value="open">Open</option>
@@ -269,7 +314,7 @@ export default function TicketDetailPage() {
               <select
                 className="input"
                 value={ticket.priority}
-                disabled={isOffline}
+                disabled={false}
                 onChange={(e) => updateMutation.mutate({ priority: e.target.value as Ticket["priority"] })}
               >
                 <option value="low">Low</option>
