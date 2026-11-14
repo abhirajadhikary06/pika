@@ -27,6 +27,26 @@ self.addEventListener("message", (event) => {
   }
 });
 
+// Background Sync is only an accelerator. The open app performs authenticated sync.
+self.addEventListener("sync", (event) => {
+  if (event.tag !== "pika-outbox") return;
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    if (!windows.length) return;
+
+    await Promise.race(windows.map((client) => new Promise((resolve) => {
+      const channel = new MessageChannel();
+      const timeout = setTimeout(() => resolve(false), 30000);
+      channel.port1.onmessage = (message) => {
+        clearTimeout(timeout);
+        resolve(Boolean(message.data && message.data.ok));
+        channel.port1.close();
+      };
+      client.postMessage({ type: "PIKA_BACKGROUND_SYNC" }, [channel.port2]);
+    })));
+  })());
+});
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   const requestUrl = new URL(request.url);

@@ -69,13 +69,22 @@ export default function DashboardLayout() {
     if (!user || !currentWs) return;
     const sync = () => { void syncWorkspace(user.id, currentWs.id).catch(() => undefined); };
     const onVisible = () => { if (document.visibilityState === "visible") sync(); };
+    const onServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type !== "PIKA_BACKGROUND_SYNC") return;
+      void syncWorkspace(user.id, currentWs.id).then(
+        () => event.ports[0]?.postMessage({ ok: true }),
+        () => event.ports[0]?.postMessage({ ok: false }),
+      );
+    };
     sync();
     window.addEventListener("online", sync);
     document.addEventListener("visibilitychange", onVisible);
+    navigator.serviceWorker?.addEventListener("message", onServiceWorkerMessage);
     const timer = window.setInterval(sync, 30000);
     return () => {
       window.removeEventListener("online", sync);
       document.removeEventListener("visibilitychange", onVisible);
+      navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);
       window.clearInterval(timer);
     };
   }, [user, currentWs?.id]);

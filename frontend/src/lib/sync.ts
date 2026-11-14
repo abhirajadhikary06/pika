@@ -20,6 +20,20 @@ function signalSyncChanged() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event("pika:sync-updated"));
 }
 
+async function registerBackgroundSync() {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready as ServiceWorkerRegistration & {
+      sync?: { register: (tag: string) => Promise<void> };
+    };
+    if (typeof registration.sync?.register === "function") {
+      await registration.sync.register("pika-outbox");
+    }
+  } catch {
+    // Browser support and permission are optional; normal sync triggers remain active.
+  }
+}
+
 function newId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
@@ -47,6 +61,7 @@ export async function queueTicketCreate(userId: string, workspaceId: string, inp
     updatedAt: now, payload: ticket,
   }]);
   signalSyncChanged();
+  void registerBackgroundSync();
   void syncWorkspace(userId, workspaceId).catch(() => undefined);
   return ticket;
 }
@@ -73,6 +88,7 @@ export async function queueTicketComment(
     version: ticket.version, deleted: false, updatedAt: now, payload: detail,
   }]);
   signalSyncChanged();
+  void registerBackgroundSync();
   void syncWorkspace(userId, workspaceId).catch(() => undefined);
   return comment;
 }
@@ -92,6 +108,7 @@ export async function queueTicketUpdate(
     version: ticket.version, deleted: false, updatedAt: now, payload: updated,
   })));
   signalSyncChanged();
+  void registerBackgroundSync();
   void syncWorkspace(userId, workspaceId).catch(() => undefined);
   return updated;
 }

@@ -267,6 +267,11 @@ export default function TicketDetailPage() {
                   {commentMutation.isPending ? "Sending…" : "Send"}
                   </button>
                 </div>
+                {isOffline && (
+                  <p className="mt-3 text-xs text-amber-700">
+                    Attachments need an internet connection. You can still write a reply and sync it later.
+                  </p>
+                )}
               </div>
             </div>
           </div>
