@@ -185,19 +185,19 @@ export default function TicketDetailPage() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2 space-y-4">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-3">
+        <div className="min-w-0 space-y-4 lg:col-span-2">
           {ticket.description && (
             <div className="card p-5">
               <p className="whitespace-pre-wrap text-sm text-slate-700">{ticket.description}</p>
             </div>
           )}
 
-          <div className="card">
-            <div className="border-b border-slate-100 px-5 py-3">
+          <div className="card flex min-h-0 min-w-0 flex-col overflow-hidden">
+            <div className="shrink-0 border-b border-slate-100 px-5 py-3">
               <h2 className="font-semibold text-slate-900">Conversation</h2>
             </div>
-            <div className="divide-y divide-slate-100 max-h-[400px] overflow-y-auto">
+            <div className="min-h-0 max-h-[min(60vh,36rem)] overflow-y-auto overscroll-contain divide-y divide-slate-100">
               {comments.length === 0 && (
                 <p className="px-5 py-8 text-center text-sm text-slate-500">No replies yet.</p>
               )}
@@ -214,11 +214,11 @@ export default function TicketDetailPage() {
                     )}
                     <span className="text-xs text-slate-400">{relativeTime(c.created_at)}</span>
                   </div>
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{c.body}</p>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-700">{c.body}</p>
                 </div>
               ))}
             </div>
-            <div className="border-t border-slate-100 p-4">
+            <div className="shrink-0 border-t border-slate-100 p-4">
               {error && <p className="mb-2 text-sm text-red-600">{error}</p>}
               <textarea
                 className="input min-h-[80px]"
