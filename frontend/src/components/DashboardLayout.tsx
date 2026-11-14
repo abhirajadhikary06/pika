@@ -27,7 +27,7 @@ const nav = [
 ];
 
 export default function DashboardLayout() {
-  const { user, logout, isOffline } = useAuth();
+  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
