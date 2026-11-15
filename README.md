@@ -1,4 +1,4 @@
-# Pika — Production-Ready Helpdesk Platform
+# Pika
 
 Pika is a modern, multi-tenant helpdesk and customer support platform built for teams. It supports workspaces, role-based access, tickets, conversations, internal notes, notifications, dashboards, and background jobs — with an architecture designed to evolve into an offline-first PWA.
 
